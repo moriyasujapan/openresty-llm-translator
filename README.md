@@ -1,48 +1,61 @@
 # nginx-translator
 
-OpenResty製リバースプロキシ。upstreamのHTMLテキストノードを言語自動検出→
-ローカルLLM(vLLM, OpenAI互換)で翻訳して返す。設計・受け入れ基準は [SPEC.md](SPEC.md)、
-実装計画は [PLAN.md](PLAN.md)。
+🇯🇵 [日本語版 README はここをクリック](README.ja.md)
 
-## 起動 / テスト
+A reverse proxy built on OpenResty. It auto-detects the language of HTML text
+nodes served by any upstream and translates them through a local LLM
+(vLLM, OpenAI-compatible API) before returning the page — text nodes only,
+everything else byte-identical.
+
+Design/acceptance criteria: [SPEC.md](SPEC.md) · implementation plan: [PLAN.md](PLAN.md).
+
+## Quick start
 
 ```sh
-# 起動 (gateway :8080, demo upstream :8090)
-sudo openresty -p /home/build/ai/nginx-translator -c nginx.conf
+# Start (gateway :8080, demo upstream :8090)
+sudo openresty -p "$(pwd)" -c nginx.conf
 
-# 停止・リロード
-sudo openresty -p /home/build/ai/nginx-translator -c nginx.conf -s stop
-sudo openresty -p /home/build/ai/nginx-translator -c nginx.conf -s reload
+# Stop / reload
+sudo openresty -p "$(pwd)" -c nginx.conf -s stop
+sudo openresty -p "$(pwd)" -c nginx.conf -s reload
 
-# 動作例
-curl -H 'Accept-Language: ja' http://127.0.0.1:8080/       # 英→ja
-curl -H 'Accept-Language: ja' http://127.0.0.1:8080/?_tcache=refresh  # 再翻訳
-curl -X POST http://127.0.0.1:8080/_translator/cache/flush  # キャッシュ全消去
+# Try it
+curl -H 'Accept-Language: ja' http://127.0.0.1:8080/                 # en -> ja
+curl -H 'Accept-Language: ja' http://127.0.0.1:8080/?_tcache=refresh # force re-translation
+curl -X POST http://127.0.0.1:8080/_translator/cache/flush           # wipe cache
 
-# 検証スイート (21項目)
-bash t/verify.sh
-resty t/tokenize_test.lua   # HTML tokenizer 単体
-resty t/detect_test.lua     # 言語検出 単体
+# Verification suites
+bash t/verify.sh            # acceptance suite (21 checks)
+resty t/tokenize_test.lua   # HTML tokenizer unit tests
+resty t/detect_test.lua     # language detection unit tests
 ```
 
-## 構成
+Requires [OpenResty](https://openresty.org/) and an OpenAI-compatible
+chat-completions endpoint (the bundled demo targets vLLM at
+`http://127.0.0.1:18024/v1`; change `lua/config.lua`).
 
-| ファイル | 役割 |
+## Layout
+
+| File | Role |
 |---|---|
-| `nginx.conf` | gateway:8080 / demo:8090 / キャッシュ管理エンドポイント |
-| `lua/filter.lua` | content_by_lua ハンドル(判定・配線) |
-| `lua/tokenize.lua` | HTMLテキストノード抽出・offset写し戻し |
-| `lua/detect.lua` | 依存ゼロの言語検出(10言語) |
-| `lua/translate.lua` | vLLMバッチ翻訳・共有辞書/ディスクキャッシュ |
-| `lua/charset.lua` | latin-1系→UTF-8 |
-| `lua/config.lua` | LLM URL/model、同時3、batch 1200B、TTL 24h、上限2MiB等 |
+| `nginx.conf` | gateway :8080 / demo :8090 / cache admin endpoints |
+| `lua/filter.lua` | content_by_lua handler (routing, decision, wiring) |
+| `lua/tokenize.lua` | HTML text-node extraction with byte-exact offset write-back |
+| `lua/detect.lua` | zero-dependency language detection (10 languages) |
+| `lua/translate.lua` | batched vLLM calls, shared-dict + disk-persistent cache |
+| `lua/charset.lua` | latin-1 family → UTF-8 |
+| `lua/config.lua` | LLM URL/model, concurrency 3, batch 1200 B, TTL 24 h, 2 MiB buffer cap, etc. |
 
-## 振る舞いの要点
+## Behavior highlights
 
-- `text/html` + 200 のみ翻訳。script/style/pre/textarea/comments/属性は不変。
-  HTMLエンティティは原文のまま保持される（プロンプトで強制）。
-- 検出言語==翻訳先、検出不能、LLM障害、charset非対応、2MiB超過 → すべて
-  原文パススルー(200)。障害で5xxを返さない。
-- `X-Translator` ヘッダに対象言語・統計(segs/cached/translated/failed/llm_ms)。
-- 翻訳キャッシュは共有辞書+60秒スナップショットで、**完全再起動をまたいで保持**。
-  `?_tcache=refresh` で個別再翻訳、`/_translator/cache/flush` で全消去。
+- Only `text/html` + status 200 is translated. `script`/`style`/`pre`/
+  `textarea`/comments/attributes are left untouched. HTML entities are
+  preserved verbatim (enforced via the prompt).
+- Detected language equals target, detection inconclusive, LLM down,
+  unsupported charset, or page over 2 MiB → the original document is returned
+  as-is with status 200. A backend failure never produces a 5xx.
+- `X-Translator` response header reports target/source languages and stats
+  (`segs` / `cached` / `translated` / `failed` / `llm_ms`).
+- Translation cache lives in a shared dict plus 60-second disk snapshots, so
+  it **survives full restarts**. Use `?_tcache=refresh` to bypass+overwrite
+  per request, or `/_translator/cache/flush` to wipe everything.
