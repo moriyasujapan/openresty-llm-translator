@@ -39,6 +39,92 @@ resty t/detect_test.lua     # 言語検出 単体
 | `lua/charset.lua` | latin-1系→UTF-8 |
 | `lua/config.lua` | LLM URL/model、同時3、batch 1200B、TTL 24h、上限2MiB等 |
 
+## nginx.conf
+
+ゲートウェイはこの設定1ファイルで完結します（`/path/to/nginx-translator` と
+`user` を自分の環境に置き換えてください。実物の動作ファイルは
+[nginx.conf](nginx.conf)）:
+
+```nginx
+worker_processes 2;
+user build;
+pid nginx-translator.pid;
+error_log logs/error.log warn;
+
+events { worker_connections 256; }
+
+http {
+    include /usr/local/openresty/nginx/conf/mime.types;
+    default_type application/octet-stream;
+    access_log logs/access.log;
+
+    lua_package_path "/path/to/nginx-translator/lua/?.lua;;";
+
+    # 翻訳キャッシュ（ワーク-shared。ディスクスナップショットで完全再起動も耐える）
+    lua_shared_dict translate_cache 64m;
+
+    init_worker_by_lua_block {
+        require("filter").init_worker()
+    }
+
+    # ---- demo upstream (静的)。実運用では実際のupstreamに置換 ----
+    server {
+        listen 127.0.0.1:8090;
+        server_name demo;
+        location / {
+            root /path/to/nginx-translator/demo;
+            default_type text/html;
+        }
+    }
+
+    # ---- translator gateway ----
+    server {
+        listen 127.0.0.1:8080;
+        server_name gateway;
+
+        # キャッシュ管理エンドポイント
+        location = /_translator/cache/flush {
+            content_by_lua_block { require("filter").flush_cache() }
+        }
+        location = /_translator/cache/dump {
+            content_by_lua_block { require("filter").dump_cache() }
+        }
+
+        # それ以外はすべて翻訳ゲートウェイへ
+        location / {
+            content_by_lua_block { require("filter").handle() }
+        }
+
+        # 素通し（非GET、翻訳無効時）
+        location @up {
+            internal;
+            proxy_pass http://127.0.0.1:8090;
+            proxy_set_header Accept-Encoding "";   # 非圧縮HTMLを受け取る
+            proxy_set_header Host "demo-upstream";
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+        }
+
+        # handle()内の ngx.location.capture() がたどるinternal location
+        # （captureはnamed locationを直接指定できないため、実locationで
+        #  /__upstream/<path> -> /<path> にrewriteする）
+        location ^~ /__upstream/ {
+            internal;
+            rewrite ^/__upstream(/.*) $1 break;
+            proxy_pass http://127.0.0.1:8090;
+            proxy_set_header Accept-Encoding "";
+            proxy_set_header Host "demo-upstream";
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+        }
+    }
+}
+```
+
+設計メモ: 翻訳は`body_filter_by_lua`ではなく**content phase**
+（`content_by_lua` + `ngx.location.capture`）で実行します。body_filterコンテキストは
+cosocketと`ngx.thread`がAPI disabledで yield 不可なためです。
+
 ## 振る舞いの要点
 
 - `text/html` + 200 のみ翻訳。script/style/pre/textarea/comments/属性は不変。
