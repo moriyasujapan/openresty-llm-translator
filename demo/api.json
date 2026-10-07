@@ -1,0 +1,4 @@
+{
+  "message": "This JSON API response must pass through untranslated and byte-identical.",
+  "items": [1, 2, 3]
+}

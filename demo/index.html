@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Welcome to the Knowledge Base</title>
+    <style>
+        body { font-family: sans-serif; }
+        .untranslated { color: blue; /* style content must never be translated */ }
+    </style>
+</div>
+</head>
+<body>
+    <!-- this comment should be skipped -->
+    <h1>Welcome to the Knowledge Base</h1>
+    <p>This is an English demo page used to verify the translation gateway.
+       It contains multiple paragraphs, entities like &amp; and &lt;tags&gt;.</p>
+    <ul>
+        <li>First item about databases</li>
+        <li>Second item about networks</li>
+    </ul>
+    <p>Special characters: < 5 &gt; 3 and a &quot;quoted word&quot;.</p>
+    <script>
+        var msg = "This script text must remain untouched";
+        if (a < b && c > d) { console.log("x"); }
+    </script>
+    <pre>
+Preformatted text
+   must not be translated
+</pre>
+    <p lang="x">Attributes like title="hover text" stay as they are.</p>
+    <a href="/de.html">German version</a> | <a href="/fr.html">French version</a>
+</body>
+</html>
